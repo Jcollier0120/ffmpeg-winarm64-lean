@@ -1,8 +1,9 @@
 # ffmpeg-winarm64-lean
 
 A small, LGPL, shared-library FFmpeg for Windows on ARM64, built for
-[[Video Duplicate Finder](https://github.com/0x90d/videoduplicatefinder)](https://github.com/Jcollier0120/Heiward)'s in-process
+[Heiward](https://github.com/Jcollier0120/Heiward)'s in-process
 FFmpeg.AutoGen 8.1 binding (avcodec-62) and its ffmpeg.exe/ffprobe.exe code path.
+Heiward is based on [Video Duplicate Finder](https://github.com/0x90d/videoduplicatefinder).
 
 ## Why
 
