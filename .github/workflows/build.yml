@@ -2,7 +2,7 @@ name: Build
 
 on:
   push:
-    tags: ['n*']        # push tag n8.1.3 to build FFmpeg n8.1.3 and publish a release
+    tags: ['n*']        # push tag n8.1.3 (or n8.1.3-2 for a rebuild) to build FFmpeg n8.1.3 and publish a release
   workflow_dispatch:
     inputs:
       ffmpeg_tag:
@@ -19,10 +19,15 @@ jobs:
     defaults:
       run:
         shell: msys2 {0}
-    env:
-      FFMPEG_TAG: ${{ github.event.inputs.ffmpeg_tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+
+      # A rebuild's tag carries a suffix (n8.1.3-2); the FFmpeg source tag is the part before it.
+      - name: FFmpeg tag
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.ffmpeg_tag || github.ref_name }}"
+          echo "FFMPEG_TAG=${tag%%-*}" >> "$GITHUB_ENV"
 
       - uses: msys2/setup-msys2@v2
         with:

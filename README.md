@@ -21,6 +21,9 @@ librsvg/cairo/DirectWrite stack. This build leaves all of that out.
 - D3D11VA, DXVA2 and D3D12VA hardware decoding (Windows system APIs)
 - Threads through Win32; no libwinpthread
 - No network protocols, no capture devices (except the lavfi test input), no ffplay
+- Compiled `-O3 -mtune=oryon-1`: scheduled for Snapdragon X cores (HEVC decodes ~15% faster
+  per core than at FFmpeg's default -O2), still only using instructions every ARM64 Windows
+  PC has
 
 The binaries import only Windows system DLLs and each other. `build.sh` fails if that
 changes.
@@ -43,6 +46,12 @@ The zip and `checksums.sha256` land in `work/`.
 ## Build on GitHub Actions
 
 `.github/workflows/build.yml` runs the same script on a `windows-11-arm` runner. Push a
-tag named after the FFmpeg tag (for example `n8.1.3`) to publish a release with the zip
-and a `checksums.sha256` that VDF's downloader verifies. Run the workflow by hand to get
-a build artifact without a release.
+tag named after the FFmpeg tag (for example `n8.1.3`, or `n8.1.3-2` for a rebuild of the
+same FFmpeg) to publish a release with the zip and a `checksums.sha256` that VDF's
+downloader verifies. An existing release is never touched, since downloaders pin its
+assets' SHA-256. Run the workflow by hand to get a build artifact without a release.
+
+## Releases
+
+- `n8.1.3-2`: `-O3 -mtune=oryon-1` (~15% faster HEVC per core, bit-identical output)
+- `n8.1.3`: first release, FFmpeg's default optimization
