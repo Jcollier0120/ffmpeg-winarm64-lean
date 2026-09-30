@@ -15,7 +15,21 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-11-arm
+    strategy:
+      # One architecture failing must not cancel the other's build log.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: windows-11-arm
+            msystem: CLANGARM64
+            extra: ''
+          - arch: x64
+            runner: windows-latest
+            msystem: CLANG64
+            # x64's SIMD code is assembly that needs nasm.
+            extra: 'nasm:p'
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         shell: msys2 {0}
@@ -31,12 +45,12 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: CLANGARM64
+          msystem: ${{ matrix.msystem }}
           update: true
           install: >-
             make diffutils git
           pacboy: >-
-            clang:p lld:p llvm-tools:p pkgconf:p dav1d:p zlib:p
+            clang:p lld:p llvm-tools:p pkgconf:p dav1d:p zlib:p ${{ matrix.extra }}
 
       - name: Build
         run: ./build.sh
@@ -44,30 +58,40 @@ jobs:
       - name: Smoke test
         run: |
           set -e
-          name=ffmpeg-${FFMPEG_TAG#n}-lean-lgpl-shared-win-arm64
+          name=ffmpeg-${FFMPEG_TAG#n}-lean-lgpl-shared-win-${{ matrix.arch }}
           work/$name/bin/ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=640x360:rate=1 -frames:v 3 -c:v png -f image2pipe - > /dev/null
           work/$name/bin/ffprobe.exe -hide_banner -version | head -1
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-${{ env.FFMPEG_TAG }}-lean-lgpl-shared-win-arm64
-          path: |
-            work/*.zip
-            work/checksums.sha256
+          name: ffmpeg-${{ env.FFMPEG_TAG }}-lean-lgpl-shared-win-${{ matrix.arch }}
+          path: work/*.zip
 
+  # One release with both architectures, once both built.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Never touches an existing release: downloaders pin the SHA-256 of its assets.
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        # Never touches an existing release: downloaders pin the SHA-256 of its assets.
+          TAG: ${{ github.ref_name }}
+        working-directory: dist
         run: |
-          gh release view "${{ github.ref_name }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release ${{ github.ref_name }} already exists; leaving its assets alone."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving its assets alone."
             exit 0
-          }
-          $readme = Get-ChildItem work/ffmpeg-*/readme.txt | Select-Object -First 1
-          gh release create "${{ github.ref_name }}" (Get-ChildItem work/*.zip).FullName work/checksums.sha256 `
-            --title "FFmpeg ${{ github.ref_name }} lean LGPL shared, Windows ARM64" `
-            --notes-file $readme.FullName
+          fi
+          sha256sum *.zip > checksums.sha256
+          cat checksums.sha256
+          for zip in *.zip; do unzip -p "$zip" '*/readme.txt'; echo; done > notes.txt
+          gh release create "$TAG" *.zip checksums.sha256 --repo "$GITHUB_REPOSITORY" \
+            --title "FFmpeg $TAG lean LGPL shared, Windows ARM64 and x64" \
+            --notes-file notes.txt

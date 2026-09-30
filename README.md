@@ -1,8 +1,9 @@
 # ffmpeg-winarm64-lean
 
-A small, LGPL, shared-library FFmpeg for Windows on ARM64, built for
-[Heiward](https://github.com/Jcollier0120/Heiward)'s in-process
-FFmpeg.AutoGen 8.1 binding (avcodec-62) and its ffmpeg.exe/ffprobe.exe code path.
+A small, LGPL, shared-library FFmpeg for Windows on ARM64, and since `n8.1.3-3` for x64
+too. It's built for [Heiward](https://github.com/Jcollier0120/Heiward)'s in-process
+FFmpeg.AutoGen 8.1 binding (avcodec-62) and its ffmpeg.exe/ffprobe.exe code path, and
+ships inside Heiward's Microsoft Store package.
 Heiward is based on [Video Duplicate Finder](https://github.com/0x90d/videoduplicatefinder).
 
 ## Why
@@ -11,6 +12,9 @@ BtbN's `winarm64` builds (8.1, 9.0 and master; GPL and LGPL; shared and static) 
 with 0xC0000005 while `avcodec-62.dll` loads on some Snapdragon X machines, so even
 `ffmpeg -version` fails. The fault is in load-time init code of the statically linked
 librsvg/cairo/DirectWrite stack. This build leaves all of that out.
+
+The x64 build has the same configuration, so an app gets the same FFmpeg on both
+architectures, a fraction of the size of a full build.
 
 ## What's in it
 
@@ -22,9 +26,11 @@ librsvg/cairo/DirectWrite stack. This build leaves all of that out.
 - D3D11VA, DXVA2 and D3D12VA hardware decoding (Windows system APIs)
 - Threads through Win32; no libwinpthread
 - No network protocols, no capture devices (except the lavfi test input), no ffplay
-- Compiled `-O3 -mtune=oryon-1`: scheduled for Snapdragon X cores (HEVC decodes ~15% faster
-  per core than at FFmpeg's default -O2), still only using instructions every ARM64 Windows
-  PC has
+- ARM64: compiled `-O3 -mtune=oryon-1`, which schedules for Snapdragon X cores. HEVC
+  decodes ~15% faster per core than at FFmpeg's default -O2, and it still only uses
+  instructions every ARM64 Windows PC has.
+- x64: compiled `-O3` with FFmpeg's hand-written SIMD assembly (nasm), picked at run time
+  for the CPU at hand
 
 The binaries import only Windows system DLLs and each other. `build.sh` fails if that
 changes.
@@ -34,7 +40,7 @@ License: LGPL-2.1-or-later (FFmpeg), plus the dav1d and zlib licenses; all three
 
 ## Build locally
 
-Install [MSYS2](https://www.msys2.org), then in a CLANGARM64 shell:
+Install [MSYS2](https://www.msys2.org). For ARM64, in a CLANGARM64 shell:
 
 ```sh
 pacman -S --needed make diffutils git \
@@ -42,17 +48,28 @@ pacman -S --needed make diffutils git \
 ./build.sh                    # FFMPEG_TAG=n8.1.3 by default
 ```
 
+For x64, in a CLANG64 shell:
+
+```sh
+pacman -S --needed make diffutils git \
+  mingw-w64-clang-x86_64-{clang,lld,llvm-tools,pkgconf,dav1d,zlib,nasm}
+./build.sh
+```
+
 The zip and `checksums.sha256` land in `work/`.
 
 ## Build on GitHub Actions
 
-`.github/workflows/build.yml` runs the same script on a `windows-11-arm` runner. Push a
-tag named after the FFmpeg tag (for example `n8.1.3`, or `n8.1.3-2` for a rebuild of the
-same FFmpeg) to publish a release with the zip and a `checksums.sha256` that VDF's
-downloader verifies. An existing release is never touched, since downloaders pin its
-assets' SHA-256. Run the workflow by hand to get a build artifact without a release.
+`.github/workflows/build.yml` runs the same script for ARM64 on a `windows-11-arm` runner
+and for x64 on `windows-latest`. Push a tag named after the FFmpeg tag (for example
+`n8.1.3`, or `n8.1.3-3` for a rebuild of the same FFmpeg) to publish a release with both
+zips and a `checksums.sha256` that VDF's downloader verifies. The release is created only
+after both architectures have built. An existing release is never touched, since
+downloaders pin its assets' SHA-256. Run the workflow by hand to get build artifacts
+without a release.
 
 ## Releases
 
+- `n8.1.3-3`: adds the x64 build; ARM64 is built as in `n8.1.3-2`
 - `n8.1.3-2`: `-O3 -mtune=oryon-1` (~15% faster HEVC per core, bit-identical output)
 - `n8.1.3`: first release, FFmpeg's default optimization
