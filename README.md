@@ -24,6 +24,11 @@ architectures, a fraction of the size of a full build.
 - AV1 through dav1d (static, BSD-2-Clause)
 - zlib (static)
 - D3D11VA, DXVA2 and D3D12VA hardware decoding (Windows system APIs)
+- Media Foundation encoders (`h264_mf`, `hevc_mf`, `av1_mf`; `aac_mf`, `ac3_mf`, `mp3_mf`).
+  With `-hw_encoding 1` they reach the PC's own video encoder. On a Snapdragon X2 Elite
+  (Adreno X2-90, driver 32.0.172.2) that is the only way in: `hevc_mf` opens "QCOM Hardware
+  Encoder - HEVC" and encodes 1080p30 at about 16× real time, while the driver offers no
+  D3D12 video encode, so `hevc_d3d12va` and friends are listed but refuse to open.
 - Threads through Win32; no libwinpthread
 - No network protocols, no capture devices (except the lavfi test input), no ffplay
 - ARM64: compiled `-O3 -mtune=oryon-1`, which schedules for Snapdragon X cores. HEVC
@@ -70,6 +75,7 @@ without a release.
 
 ## Releases
 
+- `n8.1.3-4`: adds the Media Foundation encoders, for hardware encoding on Snapdragon X
 - `n8.1.3-3`: adds the x64 build; ARM64 is built as in `n8.1.3-2`
 - `n8.1.3-2`: `-O3 -mtune=oryon-1` (~15% faster HEVC per core, bit-identical output)
 - `n8.1.3`: first release, FFmpeg's default optimization
