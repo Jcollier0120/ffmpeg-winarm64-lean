@@ -62,6 +62,9 @@ cd "$BUILD"
 # Media Foundation's encoders (h264_mf, hevc_mf, av1_mf with -hw_encoding 1) reach the PC's
 # own video encoder; Snapdragon X2's is only offered that way, not through D3D12 video
 # encode. They load mfplat.dll at run time and add no DLL dependency.
+# Of the devices, only lavfi (test sources) and dshow (DirectShow: capture cards, cameras and
+# their sound) are built. dshow links strmiids and uuid statically, and imports only Windows'
+# own ole32, oleaut32, shlwapi and psapi.
 # --pkg-config-flags=--static and -static make lld take libdav1d.a/libz.a instead of
 # their import libraries; Windows system import libraries are .a files, so they still
 # resolve to the system DLLs.
@@ -82,7 +85,7 @@ cd "$BUILD"
 	--enable-d3d11va --enable-dxva2 --enable-d3d12va \
 	--enable-mediafoundation \
 	--disable-network \
-	--disable-devices --enable-indev=lavfi \
+	--disable-devices --enable-indev=lavfi --enable-indev=dshow \
 	--disable-ffplay \
 	--disable-doc \
 	--disable-debug \

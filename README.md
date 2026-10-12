@@ -75,6 +75,7 @@ without a release.
 
 ## Releases
 
+- `n8.1.3-5`: adds DirectShow input (`-f dshow`), for recording from capture cards
 - `n8.1.3-4`: adds the Media Foundation encoders, for hardware encoding on Snapdragon X
 - `n8.1.3-3`: adds the x64 build; ARM64 is built as in `n8.1.3-2`
 - `n8.1.3-2`: `-O3 -mtune=oryon-1` (~15% faster HEVC per core, bit-identical output)

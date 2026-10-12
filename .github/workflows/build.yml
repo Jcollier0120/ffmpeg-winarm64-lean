@@ -61,6 +61,8 @@ jobs:
           name=ffmpeg-${FFMPEG_TAG#n}-lean-lgpl-shared-win-${{ matrix.arch }}
           work/$name/bin/ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=640x360:rate=1 -frames:v 3 -c:v png -f image2pipe - > /dev/null
           work/$name/bin/ffprobe.exe -hide_banner -version | head -1
+          # DirectShow input, for capture cards, is built in.
+          work/$name/bin/ffmpeg.exe -hide_banner -devices | grep -q ' dshow '
 
       - uses: actions/upload-artifact@v4
         with:
