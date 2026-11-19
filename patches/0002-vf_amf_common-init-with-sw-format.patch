@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Julius Bairaktaris <julius@bairaktaris.de>
+Date: Thu, 23 Jul 2026 01:18:23 +0200
+Subject: [PATCH 2/3] avfilter/vf_amf_common: fix component Init() format with
+ hwaccel input frames
+
+amf_init_filter_config() returned the hardware pixel format (e.g.
+AV_PIX_FMT_D3D11) as in_format when the input link carries D3D11VA or
+DXVA2 hw frames. av_av_to_amf_format() maps hw formats to
+AMF_SURFACE_UNKNOWN, so every AMF filter failed its component Init()
+with AMF_INVALID_ARG (VQEnhancer, FRC) or AMF_NOT_SUPPORTED
+(Converter, HQScaler). Return the underlying software format instead,
+which is already validated against AMF a few lines above. Apply the
+same mapping to the default output sw format, which otherwise ends up
+as the hw pixel format in hwframes_out->sw_format when the output link
+uses a hwaccel format.
+
+(cherry picked from FFmpeg master d43b1efd2e948f44cfac91f7a4325a3d927d6718;
+its include context adapted to n8.1.3. On n8.1.3 it is what makes
+"ddagrab,vpp_amf" fail with "AMFConverter-Init() failed with error 10".)
+---
+ libavfilter/vf_amf_common.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/libavfilter/vf_amf_common.c b/libavfilter/vf_amf_common.c
+index b458de5..f358af8 100644
+--- a/libavfilter/vf_amf_common.c
++++ b/libavfilter/vf_amf_common.c
+@@ -24,6 +24,7 @@
+ #include "formats.h"
+ #include "libavutil/mem.h"
+ #include "libavutil/imgutils.h"
++#include "libavutil/pixdesc.h"
+ 
+ #include "libavutil/hwcontext_amf.h"
+ #include "libavutil/hwcontext_amf_internal.h"
+@@ -319,8 +320,9 @@ int amf_init_filter_config(AVFilterLink *outlink, enum AVPixelFormat *in_format)
+         AMF_RETURN_IF_FALSE(avctx, res == 0, res, "Failed to create  hardware device context (AMF) : %s\n", av_err2str(res));
+ 
+     }
+-    if(out_sw_format == AV_PIX_FMT_NONE){
+-        if(outlink->format == AV_PIX_FMT_AMF_SURFACE)
++    if (out_sw_format == AV_PIX_FMT_NONE) {
++        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(outlink->format);
++        if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL))
+             out_sw_format = in_sw_format;
+         else
+             out_sw_format = outlink->format;
+@@ -337,11 +339,10 @@ int amf_init_filter_config(AVFilterLink *outlink, enum AVPixelFormat *in_format)
+     hwframes_out->format    = AV_PIX_FMT_AMF_SURFACE;
+     hwframes_out->sw_format = out_sw_format;
+ 
+-    if (inlink->format == AV_PIX_FMT_AMF_SURFACE) {
+-        *in_format = in_sw_format;
+-    } else {
+-        *in_format = inlink->format;
+-    }
++    // in_sw_format is inlink->format for software input and the underlying
++    // sw_format for any hw frames input (AMF, D3D11, DXVA2); the component
++    // must always be initialized with a software surface format.
++    *in_format = in_sw_format;
+     outlink->w = ctx->width;
+     outlink->h = ctx->height;
+ 

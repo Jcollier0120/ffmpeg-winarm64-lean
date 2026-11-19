@@ -3,6 +3,8 @@ name: Build
 on:
   push:
     tags: ['n*']        # push tag n8.1.3 (or n8.1.3-2 for a rebuild) to build FFmpeg n8.1.3 and publish a release
+  # A pull request builds and smoke-tests both architectures, and publishes nothing.
+  pull_request:
   workflow_dispatch:
     inputs:
       ffmpeg_tag:
@@ -12,6 +14,11 @@ on:
 
 permissions:
   contents: write
+
+# A newer push to a pull request stops its older build.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -27,9 +34,9 @@ jobs:
           - arch: x64
             runner: windows-latest
             msystem: CLANG64
-            # x64's SIMD code is assembly that needs nasm. NVENC, AMF and Quick Sync need
-            # nv-codec-headers, AMF's headers and libvpl (all MIT).
-            extra: 'nasm:p ffnvcodec-headers:p amf-headers:p libvpl:p'
+            # x64's SIMD code is assembly that needs nasm. AMF and Quick Sync need AMF's
+            # headers and libvpl (both MIT); build.sh fetches NVENC's nv-codec-headers itself.
+            extra: 'nasm:p amf-headers:p libvpl:p'
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -38,10 +45,13 @@ jobs:
       - uses: actions/checkout@v4
 
       # A rebuild's tag carries a suffix (n8.1.3-2); the FFmpeg source tag is the part before it.
+      # A pull request builds build.sh's own default.
       - name: FFmpeg tag
         shell: bash
         run: |
-          tag="${{ github.event.inputs.ffmpeg_tag || github.ref_name }}"
+          tag="${{ github.event.inputs.ffmpeg_tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}"
+          [ -n "$tag" ] || tag=$(sed -n 's/^FFMPEG_TAG=\${FFMPEG_TAG:-\(.*\)}$/\1/p' build.sh)
+          [ -n "$tag" ] || { echo "error: no FFmpeg tag" >&2; exit 1; }
           echo "FFMPEG_TAG=${tag%%-*}" >> "$GITHUB_ENV"
 
       - uses: msys2/setup-msys2@v2
@@ -64,17 +74,34 @@ jobs:
           work/$name/bin/ffprobe.exe -hide_banner -version | head -1
           # DirectShow input, for capture cards, is built in.
           work/$name/bin/ffmpeg.exe -hide_banner -devices | grep -q ' dshow '
+          # The patches are in the zip, and named in its readme.
+          for p in patches/*.patch; do
+            cmp "$p" "work/$name/patches/${p##*/}"
+            grep -qF "patches/${p##*/}" "work/$name/readme.txt"
+          done
+          filters=$(work/$name/bin/ffmpeg.exe -hide_banner -filters)
+          for f in ddagrab scale_d3d11; do
+            grep -q " $f " <<< "$filters" || { echo "error: filter $f missing" >&2; exit 1; }
+          done
+          # scale_d3d11 (patched) scales and converts on the runner's Direct3D 11 device, with no
+          # format given; it used to fail with "Unsupported pixel format: (null)".
+          work/$name/bin/ffmpeg.exe -hide_banner -v verbose -init_hw_device d3d11va=d -filter_hw_device d \
+            -f lavfi -i testsrc2=size=1280x720:rate=30 -frames:v 30 \
+            -vf format=bgra,hwupload,scale_d3d11=640:360,hwdownload,format=nv12 -f framemd5 scaled.md5 2> scale.log \
+            || { tail -20 scale.log; echo "error: scale_d3d11 failed" >&2; exit 1; }
+          grep -E 'scale_d3d11|bt709|640x360' scale.log | head -8
+          [ "$(grep -c '^0,' scaled.md5)" = 30 ] || { echo "error: scale_d3d11 gave $(grep -c '^0,' scaled.md5) frames, not 30" >&2; exit 1; }
           # x64: the graphics cards' encoders, and the filters that take ddagrab's frames to
-          # Quick Sync on the GPU. The runner has no such card, so each one is only listed here.
+          # them on the GPU. The runner has no such card, so each one is only listed here.
           if [ "${{ matrix.arch }}" = x64 ]; then
             encoders=$(work/$name/bin/ffmpeg.exe -hide_banner -encoders)
-            filters=$(work/$name/bin/ffmpeg.exe -hide_banner -filters)
             for e in h264_nvenc hevc_nvenc av1_nvenc h264_amf hevc_amf av1_amf h264_qsv hevc_qsv av1_qsv; do
               grep -q " $e " <<< "$encoders" || { echo "error: $e missing" >&2; exit 1; }
             done
-            for f in ddagrab hwmap vpp_qsv; do
+            for f in hwmap vpp_qsv vpp_amf; do
               grep -q " $f " <<< "$filters" || { echo "error: filter $f missing" >&2; exit 1; }
             done
+            grep -q '12\.2\.72\.0' work/$name/readme.txt || { echo "error: not built with nv-codec-headers 12.2.72.0" >&2; exit 1; }
             work/$name/bin/ffmpeg.exe -hide_banner -hwaccels
             # With no such card each encoder must fail to open, not crash.
             for e in h264_nvenc h264_amf h264_qsv; do
