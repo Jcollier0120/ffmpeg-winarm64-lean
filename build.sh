@@ -7,7 +7,9 @@
 # and every other external library (librsvg, cairo, fontconfig, ...) is left out.
 # BtbN's winarm64 builds crash on load on some Snapdragon X machines inside their
 # statically linked librsvg/cairo/DirectWrite code; this build avoids that code entirely.
-# The x64 build is the same configuration, so both architectures get the same FFmpeg.
+# The x64 build is the same configuration, plus the graphics cards' own encoders: NVIDIA's
+# NVENC, AMD's AMF and Intel's Quick Sync (through libvpl, linked in statically). ARM64
+# Windows PCs have none of those graphics cards, so its build leaves them out.
 #
 # Output: work/<name>.zip with bin/ (7 DLLs, ffmpeg.exe, ffprobe.exe) and licenses,
 #         plus work/checksums.sha256 in GNU sha256sum format, listing this tag's zips
@@ -31,9 +33,22 @@ PREFIX=$WORK/install-$FFMPEG_TAG
 # ARM64 Windows PCs lack (-mcpu would): HEVC decodes ~15% faster per core, bit-identically.
 # x64 keeps the default tuning: FFmpeg picks its SIMD code at run time there, and needs
 # nasm to assemble it.
+#
+# x64 also builds the graphics cards' encoders, each in its maker's MIT-licensed headers;
+# all three load the graphics driver's own runtime when they open, so they add no DLL:
+# - NVENC (h264/hevc/av1_nvenc, nv-codec-headers): nvEncodeAPI64.dll and nvcuda.dll.
+#   No CUDA SDK, no libnpp and no --enable-nonfree: the build stays LGPL.
+# - AMF (h264/hevc/av1_amf, AMF headers): amfrt64.dll.
+# - Quick Sync (h264/hevc/av1_qsv, vpp_qsv, through libvpl's dispatcher): the Intel
+#   driver's libmfx-gen.dll. libvpl.a is linked in; it is C++, so libc++ comes with it,
+#   statically, as -static already makes every library.
+# They take Direct3D 11 frames, so ddagrab's captures reach them with nothing read back:
+# NVENC and AMF as they are, Quick Sync after hwmap=derive_device=qsv and vpp_qsv.
+HWENC=()
 case "${MSYSTEM:-}" in
 	CLANGARM64) ARCH=arm64; FFARCH=aarch64; CFLAGS="-O3 -mtune=oryon-1"; ASM= ;;
-	CLANG64)    ARCH=x64;   FFARCH=x86_64;  CFLAGS="-O3";                 ASM=nasm ;;
+	CLANG64)    ARCH=x64;   FFARCH=x86_64;  CFLAGS="-O3";                 ASM=nasm
+		HWENC=(--enable-ffnvcodec --enable-nvenc --enable-amf --enable-libvpl --extra-libs=-lc++) ;;
 	*)
 		echo "error: run this in an MSYS2 CLANGARM64 (ARM64) or CLANG64 (x64) shell (MSYSTEM=${MSYSTEM:-})" >&2
 		exit 1 ;;
@@ -84,6 +99,7 @@ cd "$BUILD"
 	--enable-libdav1d \
 	--enable-d3d11va --enable-dxva2 --enable-d3d12va \
 	--enable-mediafoundation \
+	"${HWENC[@]}" \
 	--disable-network \
 	--disable-devices --enable-indev=lavfi --enable-indev=dshow \
 	--disable-ffplay \
@@ -100,11 +116,22 @@ cp "$SRC/COPYING.LGPLv2.1" "$DIST/licenses/FFmpeg-LGPL-2.1.txt"
 cp "$SRC/LICENSE.md" "$DIST/licenses/FFmpeg-LICENSE.md"
 cp "$MINGW_PREFIX/share/licenses/dav1d/COPYING" "$DIST/licenses/dav1d-BSD-2-Clause.txt"
 cp "$MINGW_PREFIX/share/licenses/zlib/LICENSE" "$DIST/licenses/zlib.txt"
+if [ "$ARCH" = x64 ]; then
+	cp "$MINGW_PREFIX/share/licenses/ffnvcodec-headers/LICENSE" "$DIST/licenses/nv-codec-headers-MIT.txt"
+	cp "$MINGW_PREFIX/share/licenses/amf-headers/LICENSE" "$DIST/licenses/AMF-MIT.txt"
+	cp "$MINGW_PREFIX/share/licenses/libvpl/LICENSE" "$DIST/licenses/libvpl-MIT.txt"
+	# AMF's headers have no pkg-config file; their version is in Version.h.
+	amf=$(sed -n 's/^#define AMF_VERSION_\(MAJOR\|MINOR\|RELEASE\|BUILD_NUM\) *\([0-9]*\).*/\2/p' \
+		"$MINGW_PREFIX/include/AMF/core/Version.h" | paste -sd.)
+fi
 {
 	echo "FFmpeg $FFMPEG_TAG, lean LGPL shared build for Windows $ARCH"
 	echo "Source: https://github.com/FFmpeg/FFmpeg/tree/$FFMPEG_TAG"
 	echo "Compiler: $(clang --version | head -1)"
 	echo "dav1d: $(pkgconf --modversion dav1d)  zlib: $(pkgconf --modversion zlib)"
+	if [ "$ARCH" = x64 ]; then
+		echo "nv-codec-headers: $(pkgconf --modversion ffnvcodec)  AMF headers: $amf  libvpl: $(pkgconf --modversion vpl)"
+	fi
 	echo
 	"$DIST/bin/ffmpeg.exe" -hide_banner -buildconf
 } > "$DIST/readme.txt"

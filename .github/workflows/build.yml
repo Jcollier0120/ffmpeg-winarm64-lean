@@ -27,8 +27,9 @@ jobs:
           - arch: x64
             runner: windows-latest
             msystem: CLANG64
-            # x64's SIMD code is assembly that needs nasm.
-            extra: 'nasm:p'
+            # x64's SIMD code is assembly that needs nasm. NVENC, AMF and Quick Sync need
+            # nv-codec-headers, AMF's headers and libvpl (all MIT).
+            extra: 'nasm:p ffnvcodec-headers:p amf-headers:p libvpl:p'
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -63,6 +64,29 @@ jobs:
           work/$name/bin/ffprobe.exe -hide_banner -version | head -1
           # DirectShow input, for capture cards, is built in.
           work/$name/bin/ffmpeg.exe -hide_banner -devices | grep -q ' dshow '
+          # x64: the graphics cards' encoders, and the filters that take ddagrab's frames to
+          # Quick Sync on the GPU. The runner has no such card, so each one is only listed here.
+          if [ "${{ matrix.arch }}" = x64 ]; then
+            encoders=$(work/$name/bin/ffmpeg.exe -hide_banner -encoders)
+            filters=$(work/$name/bin/ffmpeg.exe -hide_banner -filters)
+            for e in h264_nvenc hevc_nvenc av1_nvenc h264_amf hevc_amf av1_amf h264_qsv hevc_qsv av1_qsv; do
+              grep -q " $e " <<< "$encoders" || { echo "error: $e missing" >&2; exit 1; }
+            done
+            for f in ddagrab hwmap vpp_qsv; do
+              grep -q " $f " <<< "$filters" || { echo "error: filter $f missing" >&2; exit 1; }
+            done
+            work/$name/bin/ffmpeg.exe -hide_banner -hwaccels
+            # With no such card each encoder must fail to open, not crash.
+            for e in h264_nvenc h264_amf h264_qsv; do
+              set +e
+              work/$name/bin/ffmpeg.exe -hide_banner -f lavfi -i testsrc2=size=640x360:rate=1 -frames:v 1 -c:v $e -f null - > $e.log 2>&1
+              code=$?
+              set -e
+              tail -3 $e.log
+              echo "$e: exit $code"
+              [ $code -ne 0 ] && grep -qiE 'error|cannot|failed|could not' $e.log || { echo "error: $e did not fail cleanly" >&2; exit 1; }
+            done
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
