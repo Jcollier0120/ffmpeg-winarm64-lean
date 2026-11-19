@@ -63,10 +63,10 @@ graphics cards' own encoders (NVIDIA, AMD, Intel), which ARM64 PCs don't have.
 
   It also resolves a negative size (`1920:-2`, keeping the aspect ratio), which FFmpeg's
   own `scale_d3d11` doesn't.
-- `ddagrab`, patched: its frames can be read by shaders too. AMD's `h264_amf` and its
-  `vpp_amf` and `sr_amf` filters convert a screen capture with a shader, and failed on
-  FFmpeg's ddagrab frames (`h264_amf`: "SubmitInput() failed with error 18"); `hevc_amf`
-  and `av1_amf` worked.
+- `ddagrab`, patched: its frames can be read by shaders too, with or without the mouse
+  drawn on them. AMD's `h264_amf` and its `vpp_amf` and `sr_amf` filters convert a screen
+  capture with a shader, and failed on FFmpeg's ddagrab frames (`h264_amf`: "SubmitInput()
+  failed with error 18"); `hevc_amf` and `av1_amf` worked.
 - x64: AMD's filters take Direct3D 11 frames (`vpp_amf` failed with "AMFConverter-Init()
   failed with error 10"), with FFmpeg's own fix from its master branch (d43b1efd).
 - Threads through Win32; no libwinpthread

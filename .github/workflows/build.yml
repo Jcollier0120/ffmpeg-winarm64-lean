@@ -83,14 +83,20 @@ jobs:
           for f in ddagrab scale_d3d11; do
             grep -q " $f " <<< "$filters" || { echo "error: filter $f missing" >&2; exit 1; }
           done
-          # scale_d3d11 (patched) scales and converts on the runner's Direct3D 11 device, with no
-          # format given; it used to fail with "Unsupported pixel format: (null)".
-          work/$name/bin/ffmpeg.exe -hide_banner -v verbose -init_hw_device d3d11va=d -filter_hw_device d \
-            -f lavfi -i testsrc2=size=1280x720:rate=30 -frames:v 30 \
-            -vf format=bgra,hwupload,scale_d3d11=640:360,hwdownload,format=nv12 -f framemd5 scaled.md5 2> scale.log \
-            || { tail -20 scale.log; echo "error: scale_d3d11 failed" >&2; exit 1; }
-          grep -E 'scale_d3d11|bt709|640x360' scale.log | head -8
-          [ "$(grep -c '^0,' scaled.md5)" = 30 ] || { echo "error: scale_d3d11 gave $(grep -c '^0,' scaled.md5) frames, not 30" >&2; exit 1; }
+          # scale_d3d11 (patched) scales and converts with no format given; it used to fail with
+          # "Unsupported pixel format: (null)". It needs a Direct3D 11 device with video support,
+          # which GitHub's runners (no graphics card) don't have, so there it's only listed.
+          if work/$name/bin/ffmpeg.exe -hide_banner -v error -init_hw_device d3d11va=d \
+               -f lavfi -i nullsrc=size=16x16 -frames:v 1 -f null - 2> device.log; then
+            work/$name/bin/ffmpeg.exe -hide_banner -v verbose -init_hw_device d3d11va=d -filter_hw_device d \
+              -f lavfi -i testsrc2=size=1280x720:rate=30 -frames:v 30 \
+              -vf format=bgra,hwupload,scale_d3d11=640:360,hwdownload,format=nv12 -f framemd5 scaled.md5 2> scale.log \
+              || { tail -20 scale.log; echo "error: scale_d3d11 failed" >&2; exit 1; }
+            grep -E 'scale_d3d11|bt709|640x360' scale.log | head -8
+            [ "$(grep -c '^0,' scaled.md5)" = 30 ] || { echo "error: scale_d3d11 gave $(grep -c '^0,' scaled.md5) frames, not 30" >&2; exit 1; }
+          else
+            echo "::notice::No Direct3D 11 video device on this runner ($(head -1 device.log)); scale_d3d11 is listed, not run"
+          fi
           # x64: the graphics cards' encoders, and the filters that take ddagrab's frames to
           # them on the GPU. The runner has no such card, so each one is only listed here.
           if [ "${{ matrix.arch }}" = x64 ]; then
