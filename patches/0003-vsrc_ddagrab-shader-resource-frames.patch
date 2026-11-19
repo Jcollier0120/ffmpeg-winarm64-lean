@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jeremy Collier <jcollier0120@gmail.com>
+Date: Thu, 19 Nov 2026 13:29:48 -0500
+Subject: [PATCH 3/3] avfilter/vsrc_ddagrab: bind the frames as render targets
+ and shader resources
+
+AMF's H.264 encoder and its filters (vpp_amf, sr_amf) convert BGRA
+input to NV12 with a compute shader, which needs a shader resource view
+of the texture. ddagrab's textures had no D3D11_BIND_SHADER_RESOURCE,
+so CreateShaderResourceView() failed with E_INVALIDARG inside AMF, and
+h264_amf stopped on the first frame with "SubmitInput() failed with
+error 18" (AMF_DIRECTX_FAILED), while hevc_amf and av1_amf, which take
+BGRA on the encoder itself, worked.
+
+The frames were render targets only when the mouse was drawn on them.
+Qualcomm's video processor (Adreno X2-90) refuses a texture bound only
+as a shader resource as its input (CreateVideoProcessorInputView:
+E_INVALIDARG), so scale_d3d11 would fail with draw_mouse=0. Binding
+both always gives every reader the frames draw_mouse=1 already made.
+Every format ddagrab captures in (BGRA, R10G10B10A2,
+R16G16B16A16_FLOAT) can be bound so.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libavfilter/vsrc_ddagrab.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/libavfilter/vsrc_ddagrab.c b/libavfilter/vsrc_ddagrab.c
+index e035ac9..f5659ca 100644
+--- a/libavfilter/vsrc_ddagrab.c
++++ b/libavfilter/vsrc_ddagrab.c
+@@ -839,8 +839,11 @@ static av_cold int init_hwframes_ctx(AVFilterContext *avctx)
+         return AVERROR_BUG;
+     }
+ 
+-    if (dda->draw_mouse)
+-        dda->frames_hwctx->BindFlags |= D3D11_BIND_RENDER_TARGET;
++    // A render target (the mouse is drawn on it) and a shader resource, with or
++    // without the mouse: AMF's H.264 encoder and its filters convert the frames
++    // with a compute shader and reject a texture that isn't a shader resource,
++    // and Qualcomm's video processor (scale_d3d11) rejects one that is only that.
++    dda->frames_hwctx->BindFlags |= D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+ 
+     ret = av_hwframe_ctx_init(dda->frames_ref);
+     if (ret < 0) {

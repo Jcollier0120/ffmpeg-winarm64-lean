@@ -1,2 +1,4 @@
 *.sh text eol=lf
 *.yml text eol=lf
+# Applied byte for byte to FFmpeg's LF source: never converted.
+*.patch -text

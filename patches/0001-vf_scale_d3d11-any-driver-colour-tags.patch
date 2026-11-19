@@ -1,0 +1,164 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jeremy Collier <jcollier0120@gmail.com>
+Date: Thu, 19 Nov 2026 13:29:47 -0500
+Subject: [PATCH 1/3] avfilter/vf_scale_d3d11: work with any D3D11 driver, and
+ tag colours right
+
+- Default to nv12 (p010 for input deeper than 8 bits) when no format is
+  given; before, no format failed with "Unsupported pixel format: (null)".
+- Resolve a negative width or height (-1, -2: keep the aspect ratio)
+  with ff_scale_adjust_dimensions(), as the other scalers do; before,
+  "1920:-2" failed to configure the output pad, with no reason given.
+- Allocate output frames from a dynamic pool, one texture per frame.
+  The fixed pool was one 10-slice NV12 texture array bound
+  RENDER_TARGET|VIDEO_ENCODER, which drivers refuse without
+  D3D11_BIND_DECODER (E_INVALIDARG on Qualcomm's Adreno), and the
+  output view always wrote slice 0 while each frame said slice 0, so
+  frames still queued in an encoder shared one surface.
+- Bind output textures for the video encoder only where the driver
+  allows it; else render target only.
+- Create the input view with FourCC 0 (the texture's own format): a
+  DXGI_FORMAT is not a FourCC.
+- RGB input (ddagrab's BGRA) is converted to BT.709 limited range and
+  its matrix and range are tagged so; before, the NV12 output kept the
+  input's RGB tags, and an encoder signalled an identity matrix. The
+  primaries and transfer (ddagrab's BT.709 and sRGB) are kept. YCbCr
+  input keeps its matrix and range.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libavfilter/vf_scale_d3d11.c | 74 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 67 insertions(+), 7 deletions(-)
+
+diff --git a/libavfilter/vf_scale_d3d11.c b/libavfilter/vf_scale_d3d11.c
+index 093705c..43f4eab 100644
+--- a/libavfilter/vf_scale_d3d11.c
++++ b/libavfilter/vf_scale_d3d11.c
+@@ -221,8 +221,9 @@ static int scale_d3d11_filter_frame(AVFilterLink *inlink, AVFrame *in)
+     ID3D11Texture2D *d3d11_texture = (ID3D11Texture2D *)in->data[0];
+     int subIdx = (int)(intptr_t)in->data[1];
+ 
++    ///< FourCC 0: the view takes the texture's own DXGI format (FourCC is not a DXGI_FORMAT)
+     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputViewDesc = {
+-        .FourCC = s->input_format,
++        .FourCC = 0,
+         .ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D,
+         .Texture2D.ArraySlice = subIdx
+     };
+@@ -265,6 +266,24 @@ static int scale_d3d11_filter_frame(AVFilterLink *inlink, AVFrame *in)
+         goto fail;
+     }
+ 
++    ///< Colour: RGB input (ddagrab's) is converted to BT.709 limited range, the
++    ///< YCbCr encoders and players expect; YCbCr input keeps its own matrix and range.
++    const AVPixFmtDescriptor *in_desc = av_pix_fmt_desc_get(frames_ctx->sw_format);
++    const int rgb_in = in_desc && (in_desc->flags & AV_PIX_FMT_FLAG_RGB);
++    D3D11_VIDEO_PROCESSOR_COLOR_SPACE in_cs = { 0 }, out_cs = { 0 };
++    if (rgb_in) {
++        in_cs.RGB_Range      = in->color_range == AVCOL_RANGE_MPEG;
++        out_cs.YCbCr_Matrix  = 1;
++        out_cs.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
++    } else {
++        in_cs.YCbCr_Matrix   = in->colorspace != AVCOL_SPC_BT470BG && in->colorspace != AVCOL_SPC_SMPTE170M;
++        in_cs.Nominal_Range  = in->color_range == AVCOL_RANGE_JPEG ? D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255
++                                                                   : D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
++        out_cs = in_cs;
++    }
++    videoContext->lpVtbl->VideoProcessorSetStreamColorSpace(videoContext, s->processor, 0, &in_cs);
++    videoContext->lpVtbl->VideoProcessorSetOutputColorSpace(videoContext, s->processor, &out_cs);
++
+     ///< Process the frame
+     hr = videoContext->lpVtbl->VideoProcessorBlt(videoContext, s->processor, s->outputView, 0, 1, &stream);
+     if (FAILED(hr)) {
+@@ -285,6 +304,12 @@ static int scale_d3d11_filter_frame(AVFilterLink *inlink, AVFrame *in)
+     out->width = s->width;
+     out->height = s->height;
+     out->format = AV_PIX_FMT_D3D11;
++    if (rgb_in) {
++        ///< What the conversion changed: the input's RGB tags would make an encoder signal
++        ///< an RGB (identity) matrix. Primaries and transfer (ddagrab's: BT.709, sRGB) stay.
++        out->colorspace  = AVCOL_SPC_BT709;
++        out->color_range = AVCOL_RANGE_MPEG;
++    }
+ 
+     ///< Clean up resources
+     inputView->lpVtbl->Release(inputView);
+@@ -330,6 +355,10 @@ static int scale_d3d11_config_props(AVFilterLink *outlink)
+         av_log(ctx, AV_LOG_ERROR, "Failed to evaluate dimensions\n");
+         return ret;
+     }
++    ///< A negative size (-1, -2) keeps the aspect ratio: resolve it, as the other scalers do.
++    ret = ff_scale_adjust_dimensions(inlink, &s->width, &s->height, SCALE_FORCE_OAR_DISABLE, 1, 1.0);
++    if (ret < 0)
++        return ret;
+ 
+     outlink->w = s->width;
+     outlink->h = s->height;
+@@ -339,10 +368,21 @@ static int scale_d3d11_config_props(AVFilterLink *outlink)
+         av_log(ctx, AV_LOG_ERROR, "No hw_frames_ctx available on input link\n");
+         return AVERROR(EINVAL);
+     }
++    AVHWFramesContext *in_frames_ctx = (AVHWFramesContext *)inl->hw_frames_ctx->data;
++
++    ///< No format given: NV12, or P010 for input deeper than 8 bits
++    if (s->format == AV_PIX_FMT_NONE) {
++        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(in_frames_ctx->sw_format);
++        s->format = desc && desc->comp[0].depth > 8 ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
++    }
++    if (s->format != AV_PIX_FMT_NV12 && s->format != AV_PIX_FMT_P010) {
++        av_log(ctx, AV_LOG_ERROR, "Unsupported output format %s: nv12 or p010\n",
++               av_get_pix_fmt_name(s->format));
++        return AVERROR(EINVAL);
++    }
+ 
+     ///< Initialize filter's hardware device context
+     if (!s->hw_device_ctx) {
+-        AVHWFramesContext *in_frames_ctx = (AVHWFramesContext *)inl->hw_frames_ctx->data;
+         s->hw_device_ctx = av_buffer_ref(in_frames_ctx->device_ref);
+         if (!s->hw_device_ctx) {
+             av_log(ctx, AV_LOG_ERROR, "Failed to initialize filter hardware device context\n");
+@@ -367,19 +407,39 @@ static int scale_d3d11_config_props(AVFilterLink *outlink)
+     if (!s->hw_frames_ctx_out)
+         return AVERROR(ENOMEM);
+ 
++    ///< Output textures are bound for the video encoder too, where the driver allows it.
++    UINT bind = D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER;
++    D3D11_TEXTURE2D_DESC probeDesc = {
++        .Width      = s->width,
++        .Height     = s->height,
++        .MipLevels  = 1,
++        .ArraySize  = 1,
++        .Format     = s->format == AV_PIX_FMT_P010 ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12,
++        .SampleDesc = { .Count = 1 },
++        .Usage      = D3D11_USAGE_DEFAULT,
++        .BindFlags  = bind,
++    };
++    ID3D11Texture2D *probe = NULL;
++    if (FAILED(s->device->lpVtbl->CreateTexture2D(s->device, &probeDesc, NULL, &probe))) {
++        av_log(ctx, AV_LOG_VERBOSE, "Output textures can't be bound for the video encoder here; render target only\n");
++        bind = D3D11_BIND_RENDER_TARGET;
++    } else {
++        probe->lpVtbl->Release(probe);
++    }
++
+     AVHWFramesContext *frames_ctx = (AVHWFramesContext *)s->hw_frames_ctx_out->data;
+     frames_ctx->format = AV_PIX_FMT_D3D11;
+     frames_ctx->sw_format = s->format;
+     frames_ctx->width = s->width;
+     frames_ctx->height = s->height;
+-    frames_ctx->initial_pool_size = 10;
+-
+-    if (ctx->extra_hw_frames > 0)
+-        frames_ctx->initial_pool_size += ctx->extra_hw_frames;
++    ///< A dynamic pool: one texture per frame, as ddagrab's. A fixed pool is one texture
++    ///< array, which drivers refuse for NV12 without D3D11_BIND_DECODER (E_INVALIDARG), and
++    ///< whose slices the single-texture output view below could not address.
++    frames_ctx->initial_pool_size = 0;
+ 
+     AVD3D11VAFramesContext *frames_hwctx = frames_ctx->hwctx;
+     frames_hwctx->MiscFlags = 0;
+-    frames_hwctx->BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER;
++    frames_hwctx->BindFlags = bind;
+ 
+     ret = av_hwframe_ctx_init(s->hw_frames_ctx_out);
+     if (ret < 0) {
